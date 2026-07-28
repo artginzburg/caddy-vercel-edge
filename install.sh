@@ -4,7 +4,7 @@
 # Idempotent: safe to re-run. Run as root from the repo checkout. This is both
 # the day-one bootstrap (fresh VPS) and the "apply whatever changed" command.
 #
-#   git clone https://github.com/YOU/caddy-vercel-edge.git /opt/caddy-vercel-edge
+#   git clone https://github.com/artginzburg/caddy-vercel-edge.git /opt/caddy-vercel-edge
 #   sudo /opt/caddy-vercel-edge/install.sh
 #
 # What it does: installs Caddy if missing, symlinks every managed file from this

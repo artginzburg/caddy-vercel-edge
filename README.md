@@ -65,7 +65,7 @@ Be honest about the trade — it is a real one:
 ## Install
 
 ```bash
-git clone https://github.com/YOU/caddy-vercel-edge.git /opt/caddy-vercel-edge
+git clone https://github.com/artginzburg/caddy-vercel-edge.git /opt/caddy-vercel-edge
 sudo /opt/caddy-vercel-edge/install.sh
 ```
 
@@ -174,7 +174,7 @@ repository. If you want it version-controlled too, make it a submodule
 pointing at a private repo:
 
 ```bash
-git submodule add git@github.com:YOU/my-edge-sites.git etc/caddy/sites
+git submodule add git@github.com:you/your-private-sites.git etc/caddy/sites
 ```
 
 Everything else here is generic and safe to keep public.
@@ -183,7 +183,11 @@ Everything else here is generic and safe to keep public.
 
 `infra-autocommit.timer` commits and pushes any change under the repo every
 ~10 minutes, so the repository stays a faithful mirror of the live box and edits
-made over SSH land in git on their own. It needs a write deploy key:
+made over SSH land in git on their own.
+
+**Point `origin` at a repo you can write to first** — your own fork, or a private
+copy. Cloned straight from here, the push has nowhere to go (it fails harmlessly,
+and the commits still pile up locally). It then needs a write deploy key:
 
 ```bash
 ssh-keygen -t ed25519 -N '' -C "edge@$(hostname)" -f /root/.ssh/edge-deploy
