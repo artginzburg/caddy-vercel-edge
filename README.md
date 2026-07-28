@@ -54,7 +54,11 @@ Be honest about the trade — it is a real one:
 
 ## Requirements
 
-- A VPS **inside Russia** (~150–600 ₽/month is plenty), Ubuntu, root access
+- A VPS **inside Russia**, Ubuntu, root access. The cheapest tier does the job —
+  1 vCPU and 1 GB is plenty, and this was written on a box costing 150 ₽/month.
+  The spec worth checking is not CPU or RAM but the **traffic allowance**: the
+  proxy carries every byte your sites serve, and the cheapest tiers often cap at
+  1 TB/month.
 - Control over your domain's DNS
 - Your Vercel project reachable at `origin.<domain>`
 
