@@ -167,27 +167,88 @@ All-time totals survive log rotation: completed days are folded into SQLite at
 `/var/lib/caddy-stats`, and today is recomputed live and merged, with no double
 counting. Run `python3 tests/test_caddy_stats.py` to verify the logic.
 
-## Private sites
+## Where your own config lives
 
-`etc/caddy/sites/` is gitignored, so your real configuration never lands in this
-repository. If you want it version-controlled too, make it a submodule
-pointing at a private repo:
+`etc/caddy/sites/` holds the only genuinely private thing here — which hostnames
+you proxy, and to which origins. It is gitignored out of the box, so a stray
+`git push` can never publish it. Everything else is generic by construction.
+
+That split is the point, and it is worth running as two repositories.
+
+### Two repos — recommended
+
+Your **private** repo syncs the thing that is actually yours: the host list, the
+origins, the shape of your infrastructure. Your **public** repo — a fork of this
+one — holds the machinery, so when you change how the proxy works you can rip it
+apart, reconfigure it, and have that land in the open immediately. Those changes
+are the ones you don't mind sharing; the other kind never leaves the private
+side. Neither repo has to be sanitised before it moves, because they were never
+mixed in the first place.
+
+Attach the private one as a submodule:
 
 ```bash
 git submodule add git@github.com:you/your-private-sites.git etc/caddy/sites
+git -C etc/caddy/sites checkout -b main
+git config -f .gitmodules submodule.etc/caddy/sites.branch main
 ```
 
-Everything else here is generic and safe to keep public.
+**Check out a branch inside the submodule** — that second line is not optional.
+Submodules sit on a detached HEAD by default, and a commit made there belongs to
+no branch. `autocommit.sh` detects this and refuses rather than stranding your
+work, but nothing is mirrored until you fix it.
 
-## Optional: mirror the box back to git
+Then turn on full mirroring (see below), since with the machinery in a repo you
+own, publishing it automatically is the feature rather than the hazard:
 
-`infra-autocommit.timer` commits and pushes any change under the repo every
-~10 minutes, so the repository stays a faithful mirror of the live box and edits
-made over SSH land in git on their own.
+```bash
+echo 'AUTOCOMMIT_SELF=1' >> /etc/caddy/edge.env
+```
 
-**Point `origin` at a repo you can write to first** — your own fork, or a private
-copy. Cloned straight from here, the push has nowhere to go (it fails harmlessly,
-and the commits still pile up locally). It then needs a write deploy key:
+Upgrading the machinery is `git pull` here; your sites are untouched, because
+they are a different repository.
+
+### One private fork — simpler, if you'd rather
+
+Nothing forces the split. Fork this repository **privately**, keep sites in it,
+and let your site files be tracked:
+
+```bash
+sed -i '/^etc\/caddy\/sites\/\*\.caddy$/d;/^!etc\/caddy\/sites\//d' .gitignore
+```
+
+One repo, everything versioned, `AUTOCOMMIT_SELF=1`, done. You give up the
+ability to share machinery changes without also exposing your host list — which
+is exactly the trade the two-repo shape exists to avoid.
+
+## Mirroring the box back to git
+
+`infra-autocommit.timer` commits and pushes changes every ~10 minutes, so the
+repository stays a faithful mirror of the live box and edits made over SSH land
+in git on their own. It never fails the unit over a failed push — the commit is
+made locally and goes out next time.
+
+It treats the two repositories differently, on purpose:
+
+| | Mirrored? |
+|---|---|
+| `etc/caddy/sites/`, when it is a repo of its own | **yes, always** — this is what changes day to day |
+| this repo (the machinery) | **only with `AUTOCOMMIT_SELF=1`** |
+
+`AUTOCOMMIT_SELF` starts off for one boring reason: a fresh checkout's `origin`
+is *this* upstream, which you cannot push to. Point it at your own fork and turn
+it on — that is the intended state, not an edge case:
+
+```bash
+echo 'AUTOCOMMIT_SELF=1' >> /etc/caddy/edge.env
+```
+
+Each repo is pushed to whatever branch it has checked out, so a submodule parked
+on `split` pushes to `split`.
+
+**Point `origin` at a repo you can write to first.** Cloned straight from here,
+the push has nowhere to go (it fails harmlessly, and the commits still pile up
+locally). It then needs a write deploy key:
 
 ```bash
 ssh-keygen -t ed25519 -N '' -C "edge@$(hostname)" -f /root/.ssh/edge-deploy

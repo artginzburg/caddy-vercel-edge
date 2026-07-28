@@ -86,8 +86,15 @@ echo "==> reloading systemd & (re)starting services"
 systemctl daemon-reload
 systemctl enable --now caddy
 systemctl reload caddy 2>/dev/null || systemctl restart caddy
-systemctl enable --now caddy-stats-rollup.timer
-systemctl enable --now infra-autocommit.timer
+# reenable, not enable: systemd resolves symlinked units, so timers.target.wants/
+# ends up pointing at the *repo* path, not at /etc/systemd/system. Plain `enable`
+# no-ops on an already-enabled timer, which would leave the enablement symlink
+# aimed at a previous checkout — systemd would keep loading the old unit while
+# every other symlink pointed at the new one. `reenable` recreates it.
+for t in caddy-stats-rollup infra-autocommit; do
+  systemctl reenable "$t.timer"
+  systemctl start "$t.timer"
+done
 
 echo "==> done. caddy=$(systemctl is-active caddy)  rollup-timer=$(systemctl is-active caddy-stats-rollup.timer)  autocommit-timer=$(systemctl is-active infra-autocommit.timer)"
 echo "    If this is a fresh box, set up push for auto-commit — see README.md > Auto-sync."
