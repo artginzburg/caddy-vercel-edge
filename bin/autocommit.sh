@@ -8,8 +8,8 @@
 # terms:
 #
 #   etc/caddy/sites/ — your site configuration, the part that actually changes
-#     day to day. If it is a git repository of its own (typically a submodule
-#     pointing at a private repo), it is mirrored automatically.
+#     day to day. If it is a git repository of its own (a plain clone, or a
+#     submodule, of a private repo), it is mirrored automatically.
 #
 #   this repo — the machinery. NOT mirrored unless you opt in with
 #     AUTOCOMMIT_SELF=1 in /etc/caddy/edge.env. A stock checkout's `origin` is
@@ -18,7 +18,7 @@
 #     mirrors itself completely, machinery included, as a single-repo install
 #     does.
 #
-# Each repo is pushed to whatever branch it has checked out, so a submodule
+# Each repo is pushed to whatever branch it has checked out, so a sites repo
 # parked on `split` pushes to `split`.
 set -uo pipefail
 
@@ -50,7 +50,7 @@ mirror() {  # mirror <repo-dir> <label>
 }
 
 # 1. Site configuration — mirrored whenever it is a repo of its own.
-#    Inside a submodule `.git` is a file, not a directory, so test -e.
+#    Inside a submodule `.git` is a file, not a directory, so test -e covers both.
 [ -e "$REPO/etc/caddy/sites/.git" ] && mirror "$REPO/etc/caddy/sites" "sites"
 
 # 2. The machinery — opt-in, see the header.

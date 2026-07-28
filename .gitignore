@@ -10,6 +10,11 @@
 id_*
 
 # Per-installation config: your real sites and your generated edge marker.
-etc/caddy/sites/*.caddy
+#
+# Everything under sites/ is ignored except the two files shipped here, so that
+# cloning a private sites repo into it leaks nothing back into this one — not the
+# nested .git, not a stray README, not the site files themselves.
+etc/caddy/sites/*
 !etc/caddy/sites/00-defaults.caddy
+!etc/caddy/sites/example.com.caddy.sample
 edge.env

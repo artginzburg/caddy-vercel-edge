@@ -185,18 +185,27 @@ are the ones you don't mind sharing; the other kind never leaves the private
 side. Neither repo has to be sanitised before it moves, because they were never
 mixed in the first place.
 
-Attach the private one as a submodule:
+Clone the private one straight into `etc/caddy/sites`:
 
 ```bash
-git submodule add git@github.com:you/your-private-sites.git etc/caddy/sites
-git -C etc/caddy/sites checkout -b main
-git config -f .gitmodules submodule.etc/caddy/sites.branch main
+rm -rf etc/caddy/sites
+git clone git@github.com:you/your-private-sites.git etc/caddy/sites
 ```
 
-**Check out a branch inside the submodule** — that second line is not optional.
-Submodules sit on a detached HEAD by default, and a commit made there belongs to
-no branch. `autocommit.sh` detects this and refuses rather than stranding your
-work, but nothing is mirrored until you fix it.
+Everything under `etc/caddy/sites/` is gitignored here, including the nested
+`.git`, so the two repositories stay completely unaware of each other. Nothing
+about your private repo — not its URL, not its commit ids — is ever recorded on
+the public side.
+
+**A submodule would work too, and is worse for this.** `git submodule add` writes
+your private repo's URL into `.gitmodules`, and every site edit moves the gitlink
+in the parent, so with mirroring on, the public repo collects a commit per change
+whose only content is a pointer to a private commit. Use a submodule only if you
+actually want the machinery repo to pin which sites revision is deployed.
+
+Whichever you pick, make sure `etc/caddy/sites` is **on a branch**. A detached
+HEAD strands any commit made there; `autocommit.sh` detects it and refuses rather
+than losing your work, but nothing is mirrored until you fix it.
 
 Then turn on full mirroring (see below), since with the machinery in a repo you
 own, publishing it automatically is the feature rather than the hazard:
