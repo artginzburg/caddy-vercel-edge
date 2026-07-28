@@ -8,6 +8,10 @@ One cheap VPS fronts any number of projects. `git clone` + `./install.sh` brings
 up the whole box; the system files under `/etc` are symlinks into this repo, so
 editing the live config *is* editing the repo.
 
+This is a **template repository** — press *Use this template* to get your own
+copy, public or private, rather than running off this one directly. Your box
+commits back to whatever repo it was cloned from, so it needs to be yours.
+
 ---
 
 ## Why this exists
@@ -234,7 +238,8 @@ That split is the point, and it is worth running as two repositories.
 
 Your **private** repo syncs the thing that is actually yours: the host list, the
 origins, the shape of your infrastructure. Your **public** repo — a fork of this
-one — holds the machinery, so when you change how the proxy works you can rip it
+one, or a public copy from the template — holds the machinery, so when you change
+how the proxy works you can rip it
 apart, reconfigure it, and have that land in the open immediately. Those changes
 are the ones you don't mind sharing; the other kind never leaves the private
 side. Neither repo has to be sanitised before it moves, because they were never
@@ -270,12 +275,23 @@ echo 'AUTOCOMMIT_SELF=1' >> /etc/caddy/edge.env
 ```
 
 Upgrading the machinery is `git pull` here; your sites are untouched, because
-they are a different repository.
+they are a different repository. A copy made from the template has no link back,
+so add one once:
 
-### One private fork — simpler, if you'd rather
+```bash
+git remote add upstream https://github.com/artginzburg/caddy-vercel-edge.git
+git pull upstream main
+```
 
-Nothing forces the split. Fork this repository **privately**, keep sites in it,
-and let your site files be tracked:
+A fork already has that link and can send fixes back as pull requests, which is
+the reason to prefer forking when the copy is going to be public anyway.
+**Private copies must come from the template** — GitHub cannot make a fork of a
+public repository private.
+
+### One private copy — simpler, if you'd rather
+
+Nothing forces the split. Take a **private** copy via *Use this template*, keep
+sites in it, and let your site files be tracked:
 
 ```bash
 sed -i '/^etc\/caddy\/sites\/\*\.caddy$/d;/^!etc\/caddy\/sites\//d' .gitignore
