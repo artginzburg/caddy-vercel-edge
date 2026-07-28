@@ -84,18 +84,35 @@ echo "==> validating Caddyfile"
 caddy validate --config /etc/caddy/Caddyfile
 
 echo "==> reloading systemd & (re)starting services"
+
+# Drop stale enablement symlinks first. systemd points timers.target.wants/ at
+# the unit's *resolved* path — i.e. into whatever checkout was current when the
+# timer was enabled — so after moving the repo they still aim at the old one.
+# `systemctl reenable` looks like the fix and is not: it calls disable, which
+# deletes the unit symlink in /etc/systemd/system that we just created and leaves
+# the unit not-found. Removing only the wants/ link is what we actually want.
+for t in caddy-stats-rollup infra-autocommit; do
+  rm -f "/etc/systemd/system/timers.target.wants/$t.timer"
+done
 systemctl daemon-reload
 systemctl enable --now caddy
-systemctl reload caddy 2>/dev/null || systemctl restart caddy
-# reenable, not enable: systemd resolves symlinked units, so timers.target.wants/
-# ends up pointing at the *repo* path, not at /etc/systemd/system. Plain `enable`
-# no-ops on an already-enabled timer, which would leave the enablement symlink
-# aimed at a previous checkout — systemd would keep loading the old unit while
-# every other symlink pointed at the new one. `reenable` recreates it.
-for t in caddy-stats-rollup infra-autocommit; do
-  systemctl reenable "$t.timer"
-  systemctl start "$t.timer"
-done
+
+# Caddy resolves {env.*} from its own process environment, and a reload does NOT
+# re-read EnvironmentFile. A box whose edge marker was just created therefore
+# needs a real restart: otherwise every proxied request goes out with an empty
+# X-Edge-Proxy, the app reads that as a direct visit, and the origin->apex
+# redirect turns into a loop. Reload when the marker is already there, restart
+# when it isn't.
+pid="$(systemctl show -p MainPID --value caddy 2>/dev/null || echo 0)"
+if [ "${pid:-0}" -gt 0 ] && [ -r "/proc/$pid/environ" ] \
+   && tr '\0' '\n' < "/proc/$pid/environ" | grep -q '^EDGE_PROXY_MARKER='; then
+  systemctl reload caddy 2>/dev/null || systemctl restart caddy
+else
+  echo "    edge marker not in Caddy's environment yet — restarting, not reloading"
+  systemctl restart caddy
+fi
+
+systemctl enable --now caddy-stats-rollup.timer infra-autocommit.timer
 
 echo "==> done. caddy=$(systemctl is-active caddy)  rollup-timer=$(systemctl is-active caddy-stats-rollup.timer)  autocommit-timer=$(systemctl is-active infra-autocommit.timer)"
 echo "    If this is a fresh box, set up push for auto-commit — see README.md > Auto-sync."
