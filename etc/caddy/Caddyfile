@@ -1,0 +1,49 @@
+# Reusable snippet: structured JSON access log -> /var/log/caddy/access.log
+# Powers per-host traffic stats. Add it to any site with: import logged
+# See /root/README.md and /usr/local/bin/caddy-stats
+(logged) {
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 100MiB
+			roll_keep 12
+			roll_keep_for 8760h
+		}
+		format json
+	}
+}
+
+# Reverse-proxy to a Vercel origin AND tag the request with X-Edge-Proxy, so the
+# app can redirect *direct* visits to its origin.* host back to the public apex
+# (proxied traffic carries the marker and is served as-is).
+#   Usage:  import edge https://origin.example.com
+(edge) {
+	reverse_proxy {args[0]} {
+		header_up X-Edge-Proxy {env.EDGE_PROXY_MARKER}
+	}
+}
+
+# Standard Vercel project behind this proxy: www -> apex (301) and the apex
+# proxied to origin.<domain> with the edge marker. The origin->apex redirect for
+# direct origin visits lives in the app's next.config redirects() (see README).
+# The Vercel origin host MUST be origin.<domain>.
+#   Usage:  import vercel example.com
+(vercel) {
+	www.{args[0]} {
+		import logged
+		redir https://{args[0]}{uri} permanent
+	}
+	{args[0]} {
+		import logged
+		import edge https://origin.{args[0]}
+	}
+}
+
+# --- Your sites ---------------------------------------------------------------
+# Everything in sites/ is loaded here. Keep one file per project, e.g.
+# sites/example.com.caddy containing a single `import vercel example.com`.
+# install.sh symlinks this repo's sites/ to /etc/caddy/sites, so the glob
+# resolves the same whether Caddy reads this file through the symlink or not.
+#
+# sites/ is where private configuration lives: it is gitignored here, and can be
+# a git submodule pointing at a private repo (see README > Private sites).
+import sites/*.caddy

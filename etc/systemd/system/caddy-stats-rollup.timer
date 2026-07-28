@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily roll-up of Caddy per-host traffic stats
+
+[Timer]
+# 00:30 Europe/Moscow — yesterday is complete, so finalize it.
+OnCalendar=*-*-* 00:30:00 Europe/Moscow
+Persistent=true
+
+[Install]
+WantedBy=timers.target

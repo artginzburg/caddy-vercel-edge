@@ -1,0 +1,15 @@
+# Runtime data and secrets never belong in this repo — config files are mirrored
+# here; TLS certs, the stats DB, logs and SSH keys stay out of git. (The certs and
+# stats DB still ride box-to-box at migration — see the README runbook; logs are
+# ephemeral and the deploy key is regenerated per box.)
+*.db
+*.sqlite*
+*.log
+*.key
+*.pem
+id_*
+
+# Per-installation config: your real sites and your generated edge marker.
+sites/*.caddy
+!sites/00-defaults.caddy
+edge.env

@@ -1,0 +1,9 @@
+[Unit]
+Description=Roll up completed days of Caddy access logs into per-host traffic stats
+Documentation=file:/root/README.md
+After=caddy.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/caddy-stats roll
+Nice=10

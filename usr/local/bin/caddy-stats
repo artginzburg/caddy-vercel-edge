@@ -1,0 +1,484 @@
+#!/usr/bin/env python3
+"""
+caddy-stats — per-host traffic & visitor statistics for the Caddy reverse proxy.
+
+Reads Caddy's JSON access logs (/var/log/caddy/access*.log), attributes bytes and
+client IPs to the client-facing Host header, and reports per host: traffic
+(all-time/month/today) and unique human visitors.
+
+How "all time" survives log rotation:
+  * Completed days are rolled up into a small SQLite DB (/var/lib/caddy-stats):
+    per-day byte/request totals plus the distinct visitor IPs of each day.
+  * `caddy-stats roll` finalizes every complete day that isn't in the DB yet
+    (a systemd timer runs it daily). Once a day is in the DB it no longer
+    matters whether its log file has been rotated away.
+  * Incomplete days (today + anything since the last roll) are recomputed live
+    from the logs on every report, then merged with the DB. No double counting:
+    the DB holds days <= last_finalized_day, the live tail holds days after it.
+
+Traffic per request = bytes_read (request body) + size (response body); header
+bytes aren't counted (negligible at GB scale). Traffic counts *all* requests.
+
+"Unique visitors" = distinct client IPs after dropping bots, crawlers and the
+app's own machine traffic (server-side fetches, image optimizer, CLI tools).
+Uniques are counted by unioning IPs over the period, so they never sum across
+days or hosts (one IP seen on 10 days is one monthly visitor, not ten).
+
+Days/months are bucketed in Europe/Moscow time (see TZ_NAME) so "today" and
+"this month" match the operator's wall clock, even though the server is UTC.
+
+Usage:
+  caddy-stats                 traffic + unique-visitor summary (default)
+  caddy-stats report          same as above
+  caddy-stats --json          machine-readable summary
+  caddy-stats months [HOST]   month-by-month traffic (optionally one host)
+  caddy-stats visitors [HOST] month-by-month unique visitors
+  caddy-stats roll            finalize complete days into the DB (cron/timer)
+"""
+
+import argparse
+import glob
+import gzip
+import io
+import json
+import os
+import sqlite3
+from collections import defaultdict
+from datetime import datetime, date, timedelta
+
+LOG_DIR = "/var/log/caddy"
+LOG_GLOBS = ["access.log", "access-*.log", "access.log.gz", "access-*.log.gz"]
+DB_DIR = "/var/lib/caddy-stats"
+DB_PATH = os.path.join(DB_DIR, "stats.db")
+TZ_NAME = "Europe/Moscow"
+
+# A request counts as a human "visitor" unless its User-Agent looks like a bot /
+# crawler, or like the app's own machine traffic (SSR fetches, image proxy, CLI).
+BOT_UA = ("bot", "crawl", "spider", "slurp", "bytespider", "claudebot", "gptbot",
+          "ahrefs", "semrush", "yandex", "bingpreview", "facebookexternal",
+          "meta-external", "headless", "scanner", "censys", "masscan", "zgrab")
+INFRA_UA = ("vercel-image", "node", "undici", "axios", "go-http-client", "okhttp",
+            "python-requests", "python/", "curl", "wget", "libwww", "httpx",
+            "java/", "ruby", "guzzle", "got (")
+
+try:
+    from zoneinfo import ZoneInfo
+    TZ = ZoneInfo(TZ_NAME)
+except Exception:
+    TZ = None  # fall back to the system's local time
+
+
+def ts_to_date(ts):
+    return (datetime.fromtimestamp(ts, TZ) if TZ else datetime.fromtimestamp(ts)).date()
+
+
+def today_date():
+    return (datetime.now(TZ) if TZ else datetime.now()).date()
+
+
+def human(n):
+    n = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB"):
+        if abs(n) < 1024.0 or unit == "PiB":
+            return f"{int(n)} B" if unit == "B" else f"{n:.2f} {unit}"
+        n /= 1024.0
+
+
+# ---------------------------------------------------------------- log parsing
+
+def log_files():
+    seen, files = set(), []
+    for g in LOG_GLOBS:
+        for p in glob.glob(os.path.join(LOG_DIR, g)):
+            if p not in seen:
+                seen.add(p)
+                files.append(p)
+    return files
+
+
+def open_log(path):
+    if path.endswith(".gz"):
+        return io.TextIOWrapper(gzip.open(path, "rb"), encoding="utf-8", errors="replace")
+    return open(path, "r", encoding="utf-8", errors="replace")
+
+
+def is_visitor(ua):
+    """True if this User-Agent looks like a real human browser (not a bot and
+    not the app's own server-to-server traffic)."""
+    if not ua or ua == "-":
+        return False
+    u = ua.lower()
+    return not (any(k in u for k in BOT_UA) or any(k in u for k in INFRA_UA))
+
+
+def iter_log_records(after_day=None):
+    """Yield (host, 'YYYY-MM-DD', bytes, client_ip, is_visitor) per record.
+    If after_day (a date) is given, only records with day > after_day."""
+    for path in log_files():
+        try:
+            f = open_log(path)
+        except OSError:
+            continue
+        with f:
+            for line in f:
+                line = line.strip()
+                if not line or line[0] != "{":
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                req = rec.get("request")
+                ts = rec.get("ts")
+                if not isinstance(req, dict) or not isinstance(ts, (int, float)):
+                    continue
+                d = ts_to_date(ts)
+                if after_day is not None and d <= after_day:
+                    continue
+                host = (req.get("host") or "-").split(":")[0].lower() or "-"
+                try:
+                    total = int(rec.get("size") or 0) + int(rec.get("bytes_read") or 0)
+                except (TypeError, ValueError):
+                    total = 0
+                ip = req.get("client_ip") or req.get("remote_ip") or "-"
+                ua = ((req.get("headers") or {}).get("User-Agent") or ["-"])[0]
+                yield host, d.isoformat(), total, ip, is_visitor(ua)
+
+
+# ---------------------------------------------------------------------- store
+
+def db_connect():
+    os.makedirs(DB_DIR, exist_ok=True)
+    con = sqlite3.connect(DB_PATH)
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS daily("
+        "host TEXT NOT NULL, day TEXT NOT NULL, "
+        "requests INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0, "
+        "PRIMARY KEY(host, day))"
+    )
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS visitor("
+        "host TEXT NOT NULL, day TEXT NOT NULL, ip TEXT NOT NULL, "
+        "PRIMARY KEY(host, day, ip))"
+    )
+    con.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
+    con.commit()
+    return con
+
+
+def get_meta(con, key):
+    row = con.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def set_meta(con, key, value):
+    con.execute(
+        "INSERT INTO meta(key,value) VALUES(?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, str(value)),
+    )
+
+
+def collect_perday():
+    """Merge finalized DB rows (days <= last_finalized_day) with the live-parsed
+    tail (days after it). Returns {(host, day): [requests, bytes]}."""
+    con = db_connect()
+    last = get_meta(con, "last_finalized_day")
+    after = date.fromisoformat(last) if last else None
+    data = defaultdict(lambda: [0, 0])
+    for host, day, reqs, byts in con.execute(
+        "SELECT host, day, requests, bytes FROM daily"
+    ):
+        data[(host, day)][0] += reqs
+        data[(host, day)][1] += byts
+    for host, day, total, _ip, _vis in iter_log_records(after_day=after):
+        data[(host, day)][0] += 1
+        data[(host, day)][1] += total
+    con.close()
+    return data
+
+
+def collect_visitors():
+    """Like collect_perday but for unique visitors: merge finalized visitor IPs
+    from the DB with the live-parsed tail. Returns {(host, day): set(ip)}."""
+    con = db_connect()
+    last = get_meta(con, "last_finalized_day")
+    after = date.fromisoformat(last) if last else None
+    data = defaultdict(set)
+    for host, day, ip in con.execute("SELECT host, day, ip FROM visitor"):
+        data[(host, day)].add(ip)
+    for host, day, _total, ip, vis in iter_log_records(after_day=after):
+        if vis and ip != "-":
+            data[(host, day)].add(ip)
+    con.close()
+    return data
+
+
+# ------------------------------------------------------------------ rendering
+
+def print_table(headers, rows, note=None):
+    widths = [len(h) for h in headers]
+    for r in rows:
+        for i, c in enumerate(r):
+            widths[i] = max(widths[i], len(str(c)))
+
+    def fmt(r):
+        return "  ".join(
+            str(c).ljust(widths[i]) if i == 0 else str(c).rjust(widths[i])
+            for i, c in enumerate(r)
+        )
+
+    rule = "-" * (sum(widths) + 2 * (len(headers) - 1))
+    print(fmt(headers))
+    print(rule)
+    for r in rows[:-1]:
+        print(fmt(r))
+    if len(rows) > 1:
+        print(rule)
+    if rows:
+        print(fmt(rows[-1]))
+    if note:
+        print("\n" + note)
+
+
+def sum_by_host(data, keep):
+    out = defaultdict(lambda: [0, 0])
+    for (host, day), (reqs, byts) in data.items():
+        if keep(day):
+            out[host][0] += reqs
+            out[host][1] += byts
+    return out
+
+
+def uniques_by_host(vdata, keep):
+    """For the days `keep` selects: per-host unique-IP counts and the global
+    unique count (distinct across all hosts)."""
+    per_host = defaultdict(set)
+    glob = set()
+    for (host, day), ips in vdata.items():
+        if keep(day):
+            per_host[host] |= ips
+            glob |= ips
+    return {h: len(s) for h, s in per_host.items()}, len(glob)
+
+
+# ------------------------------------------------------------------ commands
+
+def cmd_roll(_args):
+    con = db_connect()
+    last = get_meta(con, "last_finalized_day")
+    after = date.fromisoformat(last) if last else None
+    today = today_date()
+    agg = defaultdict(lambda: [0, 0])  # (host, day) -> [requests, bytes]
+    vis = set()                        # (host, day, ip) for human visitors
+    for host, day, total, ip, isvis in iter_log_records(after_day=after):
+        if date.fromisoformat(day) >= today:
+            continue  # today is incomplete — never finalize it
+        agg[(host, day)][0] += 1
+        agg[(host, day)][1] += total
+        if isvis and ip != "-":
+            vis.add((host, day, ip))
+    for (host, day), (reqs, byts) in agg.items():
+        con.execute(
+            "INSERT INTO daily(host,day,requests,bytes) VALUES(?,?,?,?) "
+            "ON CONFLICT(host,day) DO UPDATE SET "
+            "requests=excluded.requests, bytes=excluded.bytes",
+            (host, day, reqs, byts),
+        )
+    # Replace visitor rows for the days we're finalizing (idempotent), then insert.
+    for day in {d for _h, d in agg}:
+        con.execute("DELETE FROM visitor WHERE day=?", (day,))
+    con.executemany("INSERT OR IGNORE INTO visitor(host,day,ip) VALUES(?,?,?)", vis)
+    set_meta(con, "last_finalized_day", (today - timedelta(days=1)).isoformat())
+    con.commit()
+    marker = get_meta(con, "last_finalized_day")
+    con.close()
+    print(f"finalized {len(agg)} host-day row(s), {len(vis)} visitor row(s); "
+          f"last_finalized_day={marker}")
+
+
+def cmd_report(args):
+    data = collect_perday()
+    vdata = collect_visitors()
+    today = today_date()
+    cur_m = today.strftime("%Y-%m")
+    last_m = (today.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    today_s = today.isoformat()
+
+    allh = sum_by_host(data, lambda d: True)
+    curh = sum_by_host(data, lambda d: d[:7] == cur_m)
+    lsth = sum_by_host(data, lambda d: d[:7] == last_m)
+    tdyh = sum_by_host(data, lambda d: d == today_s)
+    hosts = sorted(allh, key=lambda h: allh[h][1], reverse=True)
+
+    v_all, vg_all = uniques_by_host(vdata, lambda d: True)
+    v_cur, vg_cur = uniques_by_host(vdata, lambda d: d[:7] == cur_m)
+    v_lst, vg_lst = uniques_by_host(vdata, lambda d: d[:7] == last_m)
+    v_tdy, vg_tdy = uniques_by_host(vdata, lambda d: d == today_s)
+
+    if args.json:
+        print(json.dumps({
+            "generated": datetime.now(TZ).isoformat() if TZ else datetime.now().isoformat(),
+            "timezone": TZ_NAME if TZ else "local",
+            "this_month": cur_m, "last_month": last_m, "today": today_s,
+            "hosts": {h: {
+                "all_time_bytes": allh[h][1], "all_time_requests": allh[h][0],
+                "this_month_bytes": curh.get(h, [0, 0])[1],
+                "last_month_bytes": lsth.get(h, [0, 0])[1],
+                "today_bytes": tdyh.get(h, [0, 0])[1],
+                "visitors_all_time": v_all.get(h, 0),
+                "visitors_this_month": v_cur.get(h, 0),
+                "visitors_last_month": v_lst.get(h, 0),
+                "visitors_today": v_tdy.get(h, 0),
+            } for h in hosts},
+            "total_all_time_bytes": sum(v[1] for v in allh.values()),
+            "total_visitors_all_time": vg_all,
+            "total_visitors_this_month": vg_cur,
+            "total_visitors_today": vg_tdy,
+        }, indent=2))
+        return
+
+    rows = [(
+        h, human(allh[h][1]), human(curh.get(h, [0, 0])[1]),
+        human(lsth.get(h, [0, 0])[1]), human(tdyh.get(h, [0, 0])[1]),
+        f"{allh[h][0]:,}",
+    ) for h in hosts]
+    tb = lambda d: sum(v[1] for v in d.values())
+    tr = lambda d: sum(v[0] for v in d.values())
+    rows.append(("TOTAL", human(tb(allh)), human(tb(curh)), human(tb(lsth)),
+                 human(tb(tdyh)), f"{tr(allh):,}"))
+    print("TRAFFIC")
+    print_table(
+        ("HOST", "ALL TIME", "THIS MONTH", "LAST MONTH", "TODAY", "REQUESTS"),
+        rows,
+        note=f"this month = {cur_m}   last month = {last_m}   "
+             f"today = {today_s} ({TZ_NAME if TZ else 'local'})",
+    )
+
+    vrows = [(
+        h, f"{v_all.get(h, 0):,}", f"{v_cur.get(h, 0):,}",
+        f"{v_lst.get(h, 0):,}", f"{v_tdy.get(h, 0):,}",
+    ) for h in hosts]
+    vrows.append(("TOTAL", f"{vg_all:,}", f"{vg_cur:,}", f"{vg_lst:,}", f"{vg_tdy:,}"))
+    print("\n\nUNIQUE VISITORS  (humans only — bots & app/infra traffic excluded)")
+    print_table(
+        ("HOST", "ALL TIME", "THIS MONTH", "LAST MONTH", "TODAY"),
+        vrows,
+        note="distinct client IPs, unioned per period (they don't sum across "
+             "days/hosts); TOTAL is distinct across all hosts.",
+    )
+
+
+def cmd_months(args):
+    data = collect_perday()
+    hf = args.host.lower() if args.host else None
+    by_m = defaultdict(lambda: [0, 0])
+    by_mh = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+    for (host, day), (reqs, byts) in data.items():
+        if hf and host != hf:
+            continue
+        m = day[:7]
+        by_m[m][0] += reqs
+        by_m[m][1] += byts
+        by_mh[m][host][0] += reqs
+        by_mh[m][host][1] += byts
+    months = sorted(by_m)
+    if not months:
+        print("no data yet")
+        return
+
+    if hf:
+        rows = [(m, human(by_m[m][1]), f"{by_m[m][0]:,}") for m in months]
+        rows.append(("TOTAL", human(sum(by_m[m][1] for m in months)),
+                     f"{sum(by_m[m][0] for m in months):,}"))
+        print_table(("MONTH", f"TRAFFIC ({hf})", "REQUESTS"), rows)
+    else:
+        hosts = sorted({h for m in by_mh for h in by_mh[m]})
+        headers = ["MONTH"] + hosts + ["TOTAL"]
+        rows = []
+        for m in months:
+            row = [m] + [human(by_mh[m].get(h, [0, 0])[1]) for h in hosts]
+            row.append(human(by_m[m][1]))
+            rows.append(tuple(row))
+        trow = ["TOTAL"] + [
+            human(sum(by_mh[m].get(h, [0, 0])[1] for m in months)) for h in hosts
+        ]
+        trow.append(human(sum(by_m[m][1] for m in months)))
+        rows.append(tuple(trow))
+        print_table(tuple(headers), rows,
+                    note=f"buckets in {TZ_NAME if TZ else 'local'} time")
+
+
+def cmd_visitors(args):
+    vdata = collect_visitors()
+    hf = args.host.lower() if args.host else None
+    by_mh = defaultdict(lambda: defaultdict(set))  # month -> host -> set(ip)
+    by_m = defaultdict(set)                         # month -> global set(ip)
+    for (host, day), ips in vdata.items():
+        if hf and host != hf:
+            continue
+        m = day[:7]
+        by_mh[m][host] |= ips
+        by_m[m] |= ips
+    months = sorted(by_m)
+    if not months:
+        print("no visitor data yet")
+        return
+
+    def union(sets):
+        out = set()
+        for s in sets:
+            out |= s
+        return out
+
+    if hf:
+        rows = [(m, f"{len(by_m[m]):,}") for m in months]
+        rows.append(("TOTAL", f"{len(union(by_m.values())):,}"))
+        print_table(("MONTH", f"VISITORS ({hf})"), rows,
+                    note="unique client IPs; TOTAL is distinct across months.")
+        return
+
+    hosts = sorted({h for m in by_mh for h in by_mh[m]})
+    headers = ["MONTH"] + hosts + ["TOTAL"]
+    rows = []
+    for m in months:
+        row = [m] + [f"{len(by_mh[m].get(h, set())):,}" for h in hosts]
+        row.append(f"{len(by_m[m]):,}")
+        rows.append(tuple(row))
+    trow = ["TOTAL"] + [
+        f"{len(union(by_mh[m].get(h, set()) for m in months)):,}" for h in hosts
+    ]
+    trow.append(f"{len(union(by_m.values())):,}")
+    rows.append(tuple(trow))
+    print_table(tuple(headers), rows,
+                note="unique client IPs (bots/infra excluded), unioned per "
+                     "period — counts are distinct, so rows/cols don't add up.")
+
+
+def main():
+    p = argparse.ArgumentParser(
+        prog="caddy-stats",
+        description="Per-host traffic & visitor statistics for the Caddy reverse proxy.",
+    )
+    p.add_argument("--json", action="store_true", help="machine-readable summary")
+    sub = p.add_subparsers(dest="cmd")
+    sub.add_parser("report", help="traffic + visitor summary (default)")
+    mp = sub.add_parser("months", help="month-by-month traffic")
+    mp.add_argument("host", nargs="?", help="limit to a single host")
+    vp = sub.add_parser("visitors", help="month-by-month unique visitors")
+    vp.add_argument("host", nargs="?", help="limit to a single host")
+    sub.add_parser("roll", help="finalize complete days into the DB (cron/timer)")
+    args = p.parse_args()
+
+    if args.cmd == "roll":
+        cmd_roll(args)
+    elif args.cmd == "months":
+        cmd_months(args)
+    elif args.cmd == "visitors":
+        cmd_visitors(args)
+    else:
+        cmd_report(args)
+
+
+if __name__ == "__main__":
+    main()

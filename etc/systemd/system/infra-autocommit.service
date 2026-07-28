@@ -1,0 +1,10 @@
+[Unit]
+Description=Auto-commit & push the reverse-proxy config repo
+Documentation=file:/root/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/caddy-vercel-edge/bin/autocommit.sh
+Nice=10
