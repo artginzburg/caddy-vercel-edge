@@ -11,10 +11,8 @@ id_*
 
 # Per-installation config: your real sites and your generated edge marker.
 #
-# Everything under sites/ is ignored except the two files shipped here, so that
-# cloning a private sites repo into it leaks nothing back into this one — not the
-# nested .git, not a stray README, not the site files themselves.
-etc/caddy/sites/*
-!etc/caddy/sites/00-defaults.caddy
-!etc/caddy/sites/example.com.caddy.sample
+# The whole sites/ directory is ignored and nothing is tracked inside it, so you
+# can drop a private repo in there — or delete and re-clone it — without this repo
+# noticing anything at all. install.sh creates the directory if it is missing.
+etc/caddy/sites/
 edge.env

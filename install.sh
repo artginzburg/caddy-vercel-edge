@@ -58,9 +58,10 @@ link etc/systemd/system/caddy.service.d/override.conf /etc/systemd/system/caddy.
 ln -sfn "$REPO/README.md" /root/README.md
 chmod +x "$REPO/usr/local/bin/caddy-stats" "$REPO/bin/autocommit.sh"
 
-# sites/ holds your per-project Caddy config (and may be a private submodule).
+# sites/ holds your per-project Caddy config, typically a clone of a private repo.
 # Symlinking it next to /etc/caddy/Caddyfile makes `import sites/*.caddy` resolve
 # no matter which path Caddy reads the config through.
+mkdir -p "$REPO/etc/caddy/sites"   # nothing is tracked in it, so it may not exist yet
 ln -sfn "$REPO/etc/caddy/sites" /etc/caddy/sites
 printf '    %-52s -> %s\n' /etc/caddy/sites "$REPO/etc/caddy/sites"
 

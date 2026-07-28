@@ -1,2 +1,0 @@
-# Intentionally empty — keeps `import sites/*.caddy` matching at least one file
-# so a fresh checkout with no sites configured still validates.

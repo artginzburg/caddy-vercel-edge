@@ -1,4 +1,4 @@
-# Copy to sites/example.com.caddy and edit. One file per project.
+# Copy to sites/<domain>.caddy and edit. One file per project.
 #
 # Standard Vercel project (www -> apex 301, apex -> origin.<domain>):
 import vercel example.com

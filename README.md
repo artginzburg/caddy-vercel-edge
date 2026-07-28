@@ -91,7 +91,7 @@ Lower the TTL to 300 first for a clean cutover.
 **3. Caddy** — one file per project in `etc/caddy/sites/`:
 
 ```caddyfile
-# etc/caddy/sites/example.com.caddy
+# etc/caddy/sites/example.com.caddy — copy etc/caddy/sites.example.caddy to start
 import vercel example.com
 ```
 
