@@ -119,6 +119,48 @@ The certificate issues on its own once DNS points at the box.
 
 **4. App side** — see below. Deploy this **after** step 3, never before.
 
+### GeoDNS: proxy only one region
+
+The setup above routes *everyone* through your box. If only some countries need
+the proxy (the original use case: Vercel unreachable from Russia), serve the
+box's IP to those countries only and Vercel's anycast to the rest — nobody else
+pays the extra hop. This needs a DNS host with geo-aware answers; the snippet
+assumes [Gcore DNS](https://gcore.com/dns) (its free tier covers one dynamic
+record per zone, which is exactly what one site needs).
+
+**1. DNS** (instead of the table above) — move the zone to Gcore and create:
+
+| Record | Value |
+|---|---|
+| `<domain>` (apex) | dynamic `A`: your box IP with `countries: [RU]` metadata, Vercel's `216.198.79.1` as the default/fallback |
+| `origin.<domain>` | `CNAME` → `cname.vercel-dns.com.` — plain, **not** geo-routed |
+
+`origin.<domain>` is not optional here: from inside the proxied region the apex
+resolves to the box itself, so proxying to the apex would loop.
+
+**2. Caddy** — `import vercel-geo example.com` in your site file, and the Gcore
+API token in the environment:
+
+```bash
+echo "GCORE_API_TOKEN=<a scoped token>" >> /etc/caddy/edge.env
+./install.sh   # builds Caddy with the gcore DNS module if needed, restarts
+```
+
+Certificates must come via DNS-01 — ACME validators sit outside the proxied
+region, resolve the apex to Vercel, and HTTP-01 never reaches the box. The
+`(vercel-geo)` snippet handles that, and install.sh rebuilds Caddy with the
+[gcore module](https://github.com/caddy-dns/gcore) (absent from
+caddyserver.com's build server) the first time a site file mentions
+`vercel-geo`. Version bumps from apt no longer apply to the diverted binary —
+re-run install.sh to rebuild, or drop the divert to go back to stock.
+
+**3. Verify both branches** once the NS delegation is live:
+
+```bash
+dig +short @ns1.gcorelabs.net example.com A +subnet=95.161.0.0/24   # RU view -> box IP
+dig +short @ns1.gcorelabs.net example.com A +subnet=8.8.8.0/24      # world view -> Vercel
+```
+
 ## The `X-Edge-Proxy` marker
 
 Someone who opens `origin.example.com` directly should bounce to your real

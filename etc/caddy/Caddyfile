@@ -38,6 +38,30 @@
 	}
 }
 
+# GeoDNS variant of (vercel): the domain's DNS hands this box's IP only to the
+# countries you route here (e.g. RU) and Vercel's anycast to everyone else, so
+# only the affected region pays the proxy hop. Two differences from (vercel):
+#  - No www block. With split-horizon DNS the www record either stays on the
+#    direct branch or doesn't exist; add it in your site file if you need it.
+#  - Certificates come via DNS-01. ACME validators query from outside the
+#    proxied region, resolve the apex to Vercel's edge, and HTTP-01 fails.
+#    Needs a Caddy build with your DNS provider's module (github.com/caddy-dns;
+#    gcore is not on caddyserver.com's build server — build with xcaddy) and
+#    the provider token in edge.env. propagation_timeout -1 skips certmagic's
+#    own pre-check, which times out behind freshly delegated zones and stale
+#    public-resolver caches; the CA checks the authoritative servers anyway.
+#   Usage:  import vercel-geo example.com
+(vercel-geo) {
+	{args[0]} {
+		import logged
+		tls {
+			dns gcore {env.GCORE_API_TOKEN}
+			propagation_timeout -1
+		}
+		import edge https://origin.{args[0]}
+	}
+}
+
 # --- Your sites ---------------------------------------------------------------
 # Everything in sites/ is loaded here. Keep one file per project, e.g.
 # sites/example.com.caddy containing a single `import vercel example.com`.

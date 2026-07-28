@@ -31,7 +31,36 @@ else
   echo "==> Caddy present: $(caddy version)"
 fi
 
-# 1b. sqlite3 CLI — operator convenience for inspecting the stats DB by hand.
+# 1b. DNS provider module (GeoDNS sites) --------------------------------------
+# Sites imported through (vercel-geo) get certificates via DNS-01, which needs
+# the Gcore provider module compiled into Caddy. It is not on caddyserver.com's
+# build server, so the binary has to be built with xcaddy. dpkg-divert keeps the
+# apt package from clobbering the custom binary on upgrades — the flip side is
+# that Caddy version bumps now mean re-running this build (delete the divert to
+# go back to stock). Skipped entirely until a site actually uses vercel-geo.
+if grep -qs 'vercel-geo' "$REPO"/etc/caddy/sites/*.caddy 2>/dev/null \
+   && ! caddy list-modules 2>/dev/null | grep -q 'dns.providers.gcore'; then
+  echo "==> vercel-geo in use: building Caddy with the gcore DNS module"
+  # Distro Go is usually too old for current Caddy; keep our own in /usr/local/go.
+  GO_VER="$(curl -sfL 'https://go.dev/VERSION?m=text' | head -1)"
+  ARCH="$(dpkg --print-architecture)"  # amd64 / arm64
+  if [ ! -x /usr/local/go/bin/go ] || [ "$(/usr/local/go/bin/go version | awk '{print $3}')" != "$GO_VER" ]; then
+    echo "    fetching $GO_VER ($ARCH)"
+    rm -rf /usr/local/go
+    curl -sfL "https://go.dev/dl/${GO_VER}.linux-${ARCH}.tar.gz" | tar -C /usr/local -xzf -
+  fi
+  export PATH="/usr/local/go/bin:$PATH"
+  CADDY_VER="$(caddy version | awk '{print $1}')"
+  GOBIN=/usr/local/bin go install "github.com/caddyserver/xcaddy/cmd/xcaddy@latest"
+  xcaddy build "$CADDY_VER" --with github.com/caddy-dns/gcore --output /tmp/caddy-gcore
+  /tmp/caddy-gcore list-modules | grep -q 'dns.providers.gcore'  # refuse a bad build
+  dpkg-divert --list caddy | grep -q /usr/bin/caddy \
+    || dpkg-divert --divert /usr/bin/caddy.default --rename /usr/bin/caddy
+  install -m 0755 /tmp/caddy-gcore /usr/bin/caddy
+  echo "    now: $(caddy version) + gcore (stock binary kept as /usr/bin/caddy.default)"
+fi
+
+# 1c. sqlite3 CLI — operator convenience for inspecting the stats DB by hand.
 #     (caddy-stats itself uses Python's built-in sqlite3; this is just for the
 #     manual queries documented in the README.)
 command -v sqlite3 >/dev/null 2>&1 || { apt-get update -qq; apt-get install -y sqlite3; }
@@ -98,17 +127,19 @@ systemctl daemon-reload
 systemctl enable --now caddy
 
 # Caddy resolves {env.*} from its own process environment, and a reload does NOT
-# re-read EnvironmentFile. A box whose edge marker was just created therefore
-# needs a real restart: otherwise every proxied request goes out with an empty
-# X-Edge-Proxy, the app reads that as a direct visit, and the origin->apex
-# redirect turns into a loop. Reload when the marker is already there, restart
-# when it isn't.
+# re-read EnvironmentFile. Any variable that was added to edge.env after the
+# process started (the edge marker on a fresh box, GCORE_API_TOKEN when a geo
+# site is added later) therefore needs a real restart: with a stale environment
+# the marker goes out empty (the app reads that as a direct visit and the
+# origin->apex redirect turns into a loop) and DNS-01 fails with a 401. Reload
+# only when every variable named in edge.env is already in the process.
 pid="$(systemctl show -p MainPID --value caddy 2>/dev/null || echo 0)"
 if [ "${pid:-0}" -gt 0 ] && [ -r "/proc/$pid/environ" ] \
-   && tr '\0' '\n' < "/proc/$pid/environ" | grep -q '^EDGE_PROXY_MARKER='; then
+   && ! comm -23 <(grep -o '^[A-Za-z_][A-Za-z0-9_]*' /etc/caddy/edge.env | sort -u) \
+                 <(tr '\0' '\n' < "/proc/$pid/environ" | cut -d= -f1 | sort -u) | grep -q .; then
   systemctl reload caddy 2>/dev/null || systemctl restart caddy
 else
-  echo "    edge marker not in Caddy's environment yet — restarting, not reloading"
+  echo "    edge.env has variables Caddy's process hasn't loaded — restarting, not reloading"
   systemctl restart caddy
 fi
 
