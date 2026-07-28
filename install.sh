@@ -61,8 +61,8 @@ chmod +x "$REPO/usr/local/bin/caddy-stats" "$REPO/bin/autocommit.sh"
 # sites/ holds your per-project Caddy config (and may be a private submodule).
 # Symlinking it next to /etc/caddy/Caddyfile makes `import sites/*.caddy` resolve
 # no matter which path Caddy reads the config through.
-ln -sfn "$REPO/sites" /etc/caddy/sites
-printf '    %-52s -> %s\n' /etc/caddy/sites "$REPO/sites"
+ln -sfn "$REPO/etc/caddy/sites" /etc/caddy/sites
+printf '    %-52s -> %s\n' /etc/caddy/sites "$REPO/etc/caddy/sites"
 
 # 3b. Edge marker ---------------------------------------------------------------
 # The (edge) snippet stamps proxied requests with X-Edge-Proxy so the app can tell

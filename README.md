@@ -84,10 +84,10 @@ forward to. Add the public `<domain>` too if you need Server Actions.
 
 Lower the TTL to 300 first for a clean cutover.
 
-**3. Caddy** — one file per project in `sites/`:
+**3. Caddy** — one file per project in `etc/caddy/sites/`:
 
 ```caddyfile
-# sites/example.com.caddy
+# etc/caddy/sites/example.com.caddy
 import vercel example.com
 ```
 
@@ -165,12 +165,12 @@ counting. Run `python3 tests/test_caddy_stats.py` to verify the logic.
 
 ## Private sites
 
-`sites/` is gitignored, so your real configuration never lands in this
-repository. If you want it version-controlled too, make `sites/` a submodule
+`etc/caddy/sites/` is gitignored, so your real configuration never lands in this
+repository. If you want it version-controlled too, make it a submodule
 pointing at a private repo:
 
 ```bash
-git submodule add git@github.com:YOU/my-edge-sites.git sites
+git submodule add git@github.com:YOU/my-edge-sites.git etc/caddy/sites
 ```
 
 Everything else here is generic and safe to keep public.

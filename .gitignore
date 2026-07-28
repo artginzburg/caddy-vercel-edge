@@ -10,6 +10,6 @@
 id_*
 
 # Per-installation config: your real sites and your generated edge marker.
-sites/*.caddy
-!sites/00-defaults.caddy
+etc/caddy/sites/*.caddy
+!etc/caddy/sites/00-defaults.caddy
 edge.env

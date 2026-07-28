@@ -41,9 +41,9 @@
 # --- Your sites ---------------------------------------------------------------
 # Everything in sites/ is loaded here. Keep one file per project, e.g.
 # sites/example.com.caddy containing a single `import vercel example.com`.
-# install.sh symlinks this repo's sites/ to /etc/caddy/sites, so the glob
+# install.sh also symlinks it to /etc/caddy/sites, so the glob
 # resolves the same whether Caddy reads this file through the symlink or not.
 #
-# sites/ is where private configuration lives: it is gitignored here, and can be
+# etc/caddy/sites/ is where private configuration lives: it is gitignored here, and can be
 # a git submodule pointing at a private repo (see README > Private sites).
 import sites/*.caddy
