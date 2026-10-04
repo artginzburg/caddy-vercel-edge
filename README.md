@@ -148,11 +148,11 @@ echo "GCORE_API_TOKEN=<a scoped token>" >> /etc/caddy/edge.env
 
 Certificates must come via DNS-01 — ACME validators sit outside the proxied
 region, resolve the apex to Vercel, and HTTP-01 never reaches the box. The
-`(vercel-geo)` snippet handles that, and install.sh rebuilds Caddy with the
+`(vercel-geo)` snippet handles that, and install.sh builds Caddy with the
 [gcore module](https://github.com/caddy-dns/gcore) (absent from
-caddyserver.com's build server) the first time a site file mentions
-`vercel-geo`. Version bumps from apt no longer apply to the diverted binary —
-re-run install.sh to rebuild, or drop the divert to go back to stock.
+caddyserver.com's build server). Version bumps from apt no longer apply to the
+diverted binary — change `CADDY_VER` in install.sh and re-run it, or drop the
+divert to go back to stock.
 
 **3. Verify both branches** once the NS delegation is live:
 
@@ -160,6 +160,40 @@ re-run install.sh to rebuild, or drop the divert to go back to stock.
 dig +short @ns1.gcorelabs.net example.com A +subnet=95.161.0.0/24   # RU view -> box IP
 dig +short @ns1.gcorelabs.net example.com A +subnet=8.8.8.0/24      # world view -> Vercel
 ```
+
+## Build-asset cache
+
+Every site behind `(edge)` answers content-hashed build assets —
+`/_next/static/*` and `/_astro/*` — from an in-memory cache on the box, so a
+file is fetched from Vercel once instead of on every visit. Those files are
+named by their content and sent `immutable`, so a cached copy can never be
+stale. On a Next.js site that is most of the CDN requests Vercel bills — 71%
+of one site's million requests a month, measured before the cache existed.
+
+How it is built (see `(static-cache)` in the Caddyfile):
+
+- [cache-handler](https://github.com/caddyserver/cache-handler) with the otter
+  in-memory storage, compiled in by install.sh (pinned versions).
+- **Only those two paths.** HTML, APIs, redirects and everything else pass
+  through untouched — the module stores `Set-Cookie` responses and ignores
+  `no-cache`, so it is not safe beyond immutable assets.
+- **One stored copy, compressed per client.** Vercel picks br/gzip/identity by
+  `Accept-Encoding` without sending `Vary`; a cache keyed by URL would serve
+  brotli to a client that cannot read it. The box asks Vercel for identity and
+  `encode` compresses each response for its client (zstd or gzip).
+- Range requests skip the cache. Hits stay in the access log, so per-host stats
+  are unchanged.
+
+Check a hit from anywhere routed to the box:
+
+```bash
+curl -sI https://example.com/_next/static/chunks/<file>.js | grep -i cache-status
+# second request: "Souin; hit; ttl=…; detail=OTTER"
+```
+
+The cache lives in memory and empties on restart; it refills one request per
+file. To turn it off for one site, use your own `reverse_proxy` block for it
+instead of `import edge`.
 
 ## The `X-Edge-Proxy` marker
 

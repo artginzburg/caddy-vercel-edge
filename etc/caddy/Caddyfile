@@ -1,3 +1,32 @@
+# Global options: they must be the first block in the file. Storage and limits
+# for the HTTP cache used by (static-cache) below are set once here; the bare
+# `cache` directive there inherits them.
+#  - otter is in-memory: the cached set is a few MB of build assets, refilled
+#    from Vercel in one round-trip per file after a restart.
+#  - default_cache_control no-store: a response without Cache-Control is never
+#    stored (Souin would otherwise keep it 120 s). Vercel always sends one for
+#    the paths cached here; this only guards a future misconfiguration.
+#  - no `stale`: serve-stale is unreliable under Caddy (souin#699, #846), and
+#    the cached assets are immutable anyway.
+{
+	cache {
+		otter {
+			configuration {
+				size 5000
+			}
+		}
+		default_cache_control no-store
+		max_cacheable_body_bytes 2097152
+		timeout {
+			backend 30s
+			cache 10ms
+		}
+		key {
+			hide
+		}
+	}
+}
+
 # Reusable snippet: structured JSON access log -> /var/log/caddy/access.log
 # Powers per-host traffic stats. Add it to any site with: import logged
 # See /root/README.md and /usr/local/bin/caddy-stats
@@ -12,11 +41,42 @@
 	}
 }
 
+# Serve content-hashed build assets (/_next/static, /_astro) from a local
+# cache, so a repeat download never reaches Vercel: those files are named by
+# their content and sent `immutable`, so a URL can never change its body.
+# Vercel picks br/gzip/identity by Accept-Encoding but sends NO Vary header, so
+# a cache keyed by URL alone would hand a brotli body to a client that cannot
+# read it. Instead the cache asks Vercel for identity, stores that one copy,
+# and `encode` compresses it per client — `route` keeps encode OUTSIDE cache
+# (with `handle`, Caddy's directive order would put cache first and store one
+# variant per Accept-Encoding string). Range requests skip the cache. Nothing
+# else is cached: Souin stores Set-Cookie responses and ignores no-cache
+# (souin#805, cache-handler#135), so widening this to HTML or APIs needs those
+# issues re-read first.
+#   Usage:  import static-cache https://origin.example.com  (edge does it)
+(static-cache) {
+	@build-asset {
+		method GET HEAD
+		path /_next/static/* /_astro/*
+		not header Range *
+	}
+	route @build-asset {
+		encode zstd gzip
+		cache
+		reverse_proxy {args[0]} {
+			header_up X-Edge-Proxy {env.EDGE_PROXY_MARKER}
+			header_up Accept-Encoding identity
+		}
+	}
+}
+
 # Reverse-proxy to a Vercel origin AND tag the request with X-Edge-Proxy, so the
 # app can redirect *direct* visits to its origin.* host back to the public apex
-# (proxied traffic carries the marker and is served as-is).
+# (proxied traffic carries the marker and is served as-is). Build assets are
+# answered from the box's cache first (static-cache above).
 #   Usage:  import edge https://origin.example.com
 (edge) {
+	import static-cache {args[0]}
 	reverse_proxy {args[0]} {
 		header_up X-Edge-Proxy {env.EDGE_PROXY_MARKER}
 	}

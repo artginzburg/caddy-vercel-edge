@@ -31,16 +31,27 @@ else
   echo "==> Caddy present: $(caddy version)"
 fi
 
-# 1b. DNS provider module (GeoDNS sites) --------------------------------------
-# Sites imported through (vercel-geo) get certificates via DNS-01, which needs
-# the Gcore provider module compiled into Caddy. It is not on caddyserver.com's
-# build server, so the binary has to be built with xcaddy. dpkg-divert keeps the
-# apt package from clobbering the custom binary on upgrades — the flip side is
-# that Caddy version bumps now mean re-running this build (delete the divert to
-# go back to stock). Skipped entirely until a site actually uses vercel-geo.
-if grep -qs 'vercel-geo' "$REPO"/etc/caddy/sites/*.caddy 2>/dev/null \
-   && ! caddy list-modules 2>/dev/null | grep -q 'dns.providers.gcore'; then
-  echo "==> vercel-geo in use: building Caddy with the gcore DNS module"
+# 1b. Custom Caddy build: HTTP cache + gcore DNS ---------------------------------
+# The (edge) snippet caches build assets through cache-handler (Souin) with the
+# otter in-memory storage, and (vercel-geo) sites get certificates via DNS-01
+# with the Gcore module. None of the three is on caddyserver.com's build server,
+# so the binary is built with xcaddy, pinned: cache-handler v0.17.0 needs Caddy
+# >= v2.11.4, and building "whatever is installed" would let Go's module
+# resolution lift the core silently. dpkg-divert keeps the apt package from
+# clobbering the custom binary on upgrades (delete the divert to go back to
+# stock); a Caddy bump means changing CADDY_VER here and re-running.
+CADDY_VER="${CADDY_VER:-v2.11.7}"
+CACHE_HANDLER_VER=v0.17.0
+STORAGES_VER=v0.0.20
+MODULES="dns.providers.gcore http.handlers.cache storages.cache.otter"
+need_build=0
+for m in $MODULES; do
+  caddy list-modules 2>/dev/null | grep -q "$m" || need_build=1
+done
+[ "$(caddy version 2>/dev/null | awk '{print $1}')" = "$CADDY_VER" ] || need_build=1
+BINARY_CHANGED=0
+if [ "$need_build" = 1 ]; then
+  echo "==> building Caddy $CADDY_VER with cache-handler $CACHE_HANDLER_VER + gcore"
   # Distro Go is usually too old for current Caddy; keep our own in /usr/local/go.
   GO_VER="$(curl -sfL 'https://go.dev/VERSION?m=text' | head -1)"
   ARCH="$(dpkg --print-architecture)"  # amd64 / arm64
@@ -50,14 +61,23 @@ if grep -qs 'vercel-geo' "$REPO"/etc/caddy/sites/*.caddy 2>/dev/null \
     curl -sfL "https://go.dev/dl/${GO_VER}.linux-${ARCH}.tar.gz" | tar -C /usr/local -xzf -
   fi
   export PATH="/usr/local/go/bin:$PATH"
-  CADDY_VER="$(caddy version | awk '{print $1}')"
   GOBIN=/usr/local/bin go install "github.com/caddyserver/xcaddy/cmd/xcaddy@latest"
-  xcaddy build "$CADDY_VER" --with github.com/caddy-dns/gcore --output /tmp/caddy-gcore
-  /tmp/caddy-gcore list-modules | grep -q 'dns.providers.gcore'  # refuse a bad build
+  xcaddy build "$CADDY_VER" \
+    --with github.com/caddy-dns/gcore \
+    --with github.com/caddyserver/cache-handler@"$CACHE_HANDLER_VER" \
+    --with github.com/darkweak/storages/otter/caddy@"$STORAGES_VER" \
+    --output /tmp/caddy-edge
+  for m in $MODULES; do  # refuse a bad build
+    /tmp/caddy-edge list-modules | grep -q "$m" || { echo "module $m missing from the build" >&2; exit 1; }
+  done
+  # The new binary must accept the real config before it replaces anything.
+  /tmp/caddy-edge validate --config "$REPO/etc/caddy/Caddyfile" --adapter caddyfile
   dpkg-divert --list caddy | grep -q /usr/bin/caddy \
     || dpkg-divert --divert /usr/bin/caddy.default --rename /usr/bin/caddy
-  install -m 0755 /tmp/caddy-gcore /usr/bin/caddy
-  echo "    now: $(caddy version) + gcore (stock binary kept as /usr/bin/caddy.default)"
+  [ -x /usr/bin/caddy ] && cp -p /usr/bin/caddy /usr/bin/caddy.prev
+  install -m 0755 /tmp/caddy-edge /usr/bin/caddy
+  BINARY_CHANGED=1
+  echo "    now: $(caddy version) (previous binary kept as /usr/bin/caddy.prev)"
 fi
 
 # 1c. sqlite3 CLI — operator convenience for inspecting the stats DB by hand.
@@ -134,7 +154,11 @@ systemctl enable --now caddy
 # origin->apex redirect turns into a loop) and DNS-01 fails with a 401. Reload
 # only when every variable named in edge.env is already in the process.
 pid="$(systemctl show -p MainPID --value caddy 2>/dev/null || echo 0)"
-if [ "${pid:-0}" -gt 0 ] && [ -r "/proc/$pid/environ" ] \
+if [ "$BINARY_CHANGED" = 1 ]; then
+  # A reload keeps the old process — and with it the old binary.
+  echo "    Caddy binary replaced — restarting, not reloading"
+  systemctl restart caddy
+elif [ "${pid:-0}" -gt 0 ] && [ -r "/proc/$pid/environ" ] \
    && ! comm -23 <(grep -o '^[A-Za-z_][A-Za-z0-9_]*' /etc/caddy/edge.env | sort -u) \
                  <(tr '\0' '\n' < "/proc/$pid/environ" | cut -d= -f1 | sort -u) | grep -q .; then
   systemctl reload caddy 2>/dev/null || systemctl restart caddy
