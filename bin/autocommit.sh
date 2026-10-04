@@ -23,8 +23,9 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck disable=SC1091
-[ -r /etc/caddy/edge.env ] && . /etc/caddy/edge.env
+# Read the one key, never source the file: it is a systemd EnvironmentFile, and
+# values like a Gcore token ("123$abc") break under bash's expansion and set -u.
+AUTOCOMMIT_SELF="$(grep -m1 '^AUTOCOMMIT_SELF=' /etc/caddy/edge.env 2>/dev/null | cut -d= -f2- | tr -d "\"'")"
 : "${AUTOCOMMIT_SELF:=0}"
 
 mirror() {  # mirror <repo-dir> <label>
