@@ -72,13 +72,16 @@
 
 # Reverse-proxy to a Vercel origin AND tag the request with X-Edge-Proxy, so the
 # app can redirect *direct* visits to its origin.* host back to the public apex
-# (proxied traffic carries the marker and is served as-is). Build assets are
-# answered from the box's cache first (static-cache above).
+# (proxied traffic carries the marker and is served as-is). Vercel overwrites
+# X-Forwarded-For with this box's IP, so the client IP travels in
+# X-Edge-Client-IP-<marker>: the marker in the name keeps a direct request from
+# forging it. Build assets are answered from the box's cache first (static-cache above).
 #   Usage:  import edge https://origin.example.com
 (edge) {
 	import static-cache {args[0]}
 	reverse_proxy {args[0]} {
 		header_up X-Edge-Proxy {env.EDGE_PROXY_MARKER}
+		header_up X-Edge-Client-IP-{env.EDGE_PROXY_MARKER} {client_ip}
 	}
 }
 
