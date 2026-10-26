@@ -430,6 +430,11 @@ commit by hand.
   your box. Without it, a flood against the proxy is forwarded to Vercel, and
   Vercel may ban the proxy IP for minutes to days — taking every site behind it
   down at once.
+- **`(edge)` strips the headers that name the hosting**: `Server`, `Via`,
+  `X-Powered-By`, `X-Vercel-Id`, `X-Vercel-Cache`, `X-Matched-Path`,
+  `Cache-Status`. Keep `x-nextjs-stale-time` and `x-nextjs-prerender` — the
+  Next.js client router reads them on RSC responses. To debug Vercel's cache,
+  request the origin directly; the proxy no longer shows it.
 - **Keep the admin API on localhost** (`127.0.0.1:2019`).
 - **Configs are symlinks into this repo.** Don't delete the checkout; if you do,
   re-clone and re-run `install.sh`.
