@@ -113,6 +113,16 @@
 }
 
 (edge-proxy) {
+	import hide-hosting
+	import static-cache {args[0]}
+	reverse_proxy {args[0]} {
+		header_up X-Edge-Proxy {env.EDGE_PROXY_MARKER}
+		header_up X-Edge-Client-IP-{env.EDGE_PROXY_MARKER} {client_ip}
+		import platform-error
+	}
+}
+
+(hide-hosting) {
 	header {
 		-Server
 		-Via
@@ -122,11 +132,49 @@
 		-X-Matched-Path
 		-Cache-Status
 	}
-	import static-cache {args[0]}
-	reverse_proxy {args[0]} {
+}
+
+# (edge) for a domain whose DNS sends everyone here except a few networks, so
+# origin.<domain> resolves to this box too and proxying to it by name would loop.
+# Vercel's anycast is dialled by IP instead, with SNI and Host origin.<domain>, as
+# (edge) sends them for an HTTPS upstream by name. The second IP takes over while
+# the first refuses connections. Same caching, marker and header stripping as (edge).
+#   Usage:  import edge-anycast origin.example.com
+(edge-anycast) {
+	@platform-path path /_vercel /_vercel/*
+	respond @platform-path 404
+	import hide-hosting
+	@build-asset {
+		method GET HEAD
+		path /_next/static/* /_astro/*
+		not header Range *
+	}
+	route @build-asset {
+		encode zstd gzip
+		cache
+		reverse_proxy {
+			import vercel-anycast {args[0]}
+			header_up X-Edge-Proxy {env.EDGE_PROXY_MARKER}
+			header_up Accept-Encoding identity
+			import platform-error
+		}
+	}
+	reverse_proxy {
+		import vercel-anycast {args[0]}
 		header_up X-Edge-Proxy {env.EDGE_PROXY_MARKER}
 		header_up X-Edge-Client-IP-{env.EDGE_PROXY_MARKER} {client_ip}
 		import platform-error
+	}
+}
+
+(vercel-anycast) {
+	to https://76.76.21.21 https://216.198.79.1
+	lb_policy first
+	lb_try_duration 5s
+	fail_duration 30s
+	header_up Host {args[0]}
+	transport http {
+		tls_server_name {args[0]}
 	}
 }
 
