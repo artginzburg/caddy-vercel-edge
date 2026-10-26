@@ -170,6 +170,29 @@
 	}
 }
 
+# Lets Vercel issue and renew its own certificate for a host whose DNS points at
+# this box (GeoDNS where the proxy is the default answer). Vercel validates
+# non-wildcard domains with HTTP-01 only, so Let's Encrypt fetches
+# http://<host>/.well-known/acme-challenge/<token> from this box: that path goes
+# to Vercel's anycast with the original Host, unchanged and uncached; the rest of
+# :80 redirects to HTTPS as Caddy's automatic redirect would. The block replaces
+# that automatic redirect for the host, so it must sit at the top level of a site
+# file, once per hostname, next to the HTTPS site.
+#   Usage:  import vercel-acme example.com
+(vercel-acme) {
+	http://{args[0]} {
+		import logged
+		handle /.well-known/acme-challenge/* {
+			reverse_proxy http://76.76.21.21 {
+				header_up Host {host}
+			}
+		}
+		handle {
+			redir https://{host}{uri} 308
+		}
+	}
+}
+
 # --- Your sites ---------------------------------------------------------------
 # Everything in sites/ is loaded here. Keep one file per project, e.g.
 # sites/example.com.caddy containing a single `import vercel example.com`.
