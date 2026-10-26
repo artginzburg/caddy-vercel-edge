@@ -31,10 +31,11 @@ else
   echo "==> Caddy present: $(caddy version)"
 fi
 
-# 1b. Custom Caddy build: HTTP cache + gcore DNS ---------------------------------
+# 1b. Custom Caddy build: HTTP cache + gcore DNS + rate limit ---------------------
 # The (edge) snippet caches build assets through cache-handler (Souin) with the
-# otter in-memory storage, and (vercel-geo) sites get certificates via DNS-01
-# with the Gcore module. None of the three is on caddyserver.com's build server,
+# otter in-memory storage, (vercel-geo) sites get certificates via DNS-01 with
+# the Gcore module, and (edge-shield) limits requests per client IP with
+# caddy-ratelimit. None of them is on caddyserver.com's build server,
 # so the binary is built with xcaddy, pinned: cache-handler v0.17.0 needs Caddy
 # >= v2.11.4, and building "whatever is installed" would let Go's module
 # resolution lift the core silently. dpkg-divert keeps the apt package from
@@ -43,7 +44,8 @@ fi
 CADDY_VER="${CADDY_VER:-v2.11.7}"
 CACHE_HANDLER_VER=v0.17.0
 STORAGES_VER=v0.0.20
-MODULES="dns.providers.gcore http.handlers.cache storages.cache.otter"
+RATELIMIT_VER=v0.1.1-0.20260612195517-5625512f24f6  # master; the only tag, v0.1.0, is from 2024
+MODULES="dns.providers.gcore http.handlers.cache storages.cache.otter http.handlers.rate_limit"
 need_build=0
 for m in $MODULES; do
   caddy list-modules 2>/dev/null | grep -q "$m" || need_build=1
@@ -51,7 +53,7 @@ done
 [ "$(caddy version 2>/dev/null | awk '{print $1}')" = "$CADDY_VER" ] || need_build=1
 BINARY_CHANGED=0
 if [ "$need_build" = 1 ]; then
-  echo "==> building Caddy $CADDY_VER with cache-handler $CACHE_HANDLER_VER + gcore"
+  echo "==> building Caddy $CADDY_VER with cache-handler $CACHE_HANDLER_VER + gcore + ratelimit"
   # Distro Go is usually too old for current Caddy; keep our own in /usr/local/go.
   GO_VER="$(curl -sfL 'https://go.dev/VERSION?m=text' | head -1)"
   ARCH="$(dpkg --print-architecture)"  # amd64 / arm64
@@ -66,6 +68,7 @@ if [ "$need_build" = 1 ]; then
     --with github.com/caddy-dns/gcore \
     --with github.com/caddyserver/cache-handler@"$CACHE_HANDLER_VER" \
     --with github.com/darkweak/storages/otter/caddy@"$STORAGES_VER" \
+    --with github.com/mholt/caddy-ratelimit@"$RATELIMIT_VER" \
     --output /tmp/caddy-edge
   for m in $MODULES; do  # refuse a bad build
     /tmp/caddy-edge list-modules | grep -q "$m" || { echo "module $m missing from the build" >&2; exit 1; }

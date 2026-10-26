@@ -241,6 +241,67 @@
 	}
 }
 
+# Self-protection for a site whose DNS sends (nearly) everyone to this box. Vercel
+# then sees one client, this IP, and its automatic mitigation challenges the IP as
+# a whole once enough junk comes through it: on 2026-10-26 scanners probing
+# `%5C` paths (500s from the app) got this box a "Vercel Security Checkpoint"
+# within ~90 s, for every user behind it. Two layers keep that junk at the box:
+#  - edge-scanner-filter: 404 here, never forwarded, for paths no app of ours
+#    serves (matched on the decoded path, so %2e/%5C/hex-encoded variants count):
+#    a backslash, NUL or `%` left after decoding (double encoding), a dot
+#    segment other than /.well-known, CMS/admin-panel probes at the root, and
+#    secret/backup file extensions. /.well-known/* always passes: ACME,
+#    apple-app-site-association, assetlinks, Vercel's challenge assets.
+#  - edge-rate-limit: per client IP, 600 requests / 30 s for pages and APIs,
+#    1500 / 30 s for build assets; 429 with Retry-After beyond that. Generous
+#    on purpose: one phone loading a landing page with Next.js prefetch makes
+#    ~250 requests in 10 s, and Russian mobile carriers put many users behind
+#    one CGNAT address. The zones are global by name, so every site importing
+#    the snippet shares one budget per client IP.
+# The project also needs a Vercel system bypass for this IP (README > Proxying
+# all traffic): the box is then the only thing deciding who gets through.
+# The filter is a `handle`, so it runs before route/respond/reverse_proxy (and
+# the static-cache route). Caddy sorts a site's own `handle /path/*` blocks
+# ahead of it, so a site that has them redirects with a matcher instead.
+#   Usage:  import edge-shield   (inside the HTTPS site block)
+(edge-shield) {
+	import edge-scanner-filter
+	import edge-rate-limit
+}
+
+(edge-scanner-filter) {
+	@edge-scanner {
+		not path /.well-known/*
+		path_regexp `(?i)(\\|\x00|%|/\.|^/(wp-|wordpress|cgi-bin|phpmyadmin|pma/|myadmin|vendor/|actuator|server-status|server-info|_profiler|_vti_|xmlrpc|boaform|hnap1|telescope|autodiscover|\.?aws/)|/(credentials|secrets|user_secrets|appsettings|parameters)\.\w+$|\.(php\d?|phtml|aspx?|jsp|cgi|sql|bak|old|orig|swp|env|ya?ml|ini|conf|cfg|log|tar|tgz|gz|zip|rar|7z|key|pem|p12|pfx|db|sqlite3?|gradle|toml|xls|config|properties|sh)$)`
+	}
+	handle @edge-scanner {
+		respond 404
+	}
+}
+
+# Needs a Caddy build with github.com/mholt/caddy-ratelimit (see install.sh).
+(edge-rate-limit) {
+	rate_limit {
+		zone edge_pages {
+			match {
+				not path /_next/static/* /_astro/*
+			}
+			key {client_ip}
+			events 600
+			window 30s
+		}
+		zone edge_assets {
+			match {
+				path /_next/static/* /_astro/*
+			}
+			key {client_ip}
+			events 1500
+			window 30s
+		}
+		log_key
+	}
+}
+
 # --- Your sites ---------------------------------------------------------------
 # Everything in sites/ is loaded here. Keep one file per project, e.g.
 # sites/example.com.caddy containing a single `import vercel example.com`.
