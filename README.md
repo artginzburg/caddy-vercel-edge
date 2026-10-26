@@ -161,6 +161,27 @@ dig +short @ns1.gcorelabs.net example.com A +subnet=95.161.0.0/24   # RU view ->
 dig +short @ns1.gcorelabs.net example.com A +subnet=8.8.8.0/24      # world view -> Vercel
 ```
 
+#### When the box is the default answer
+
+Flip the record — the box as the default, Vercel only for a few networks — and
+Vercel's own certificate is the one in trouble: Vercel validates non-wildcard
+domains with HTTP-01 only, and Let's Encrypt (and Vercel's
+`/.well-known/acme-challenge/__resolve-check` probe, which decides whether the
+domain shows as misconfigured) now reach the box. Add, next to the site:
+
+```caddyfile
+import vercel-acme example.com
+```
+
+It defines `http://example.com`: `/.well-known/acme-challenge/*` goes to Vercel's
+anycast with the original Host, uncached; everything else gets the usual 308 to
+HTTPS. One import per hostname. Check it with
+`curl -sI http://example.com/.well-known/acme-challenge/test` — `404` with
+`Server: Vercel`, not a redirect — and the project's domain config should list
+`acceptedChallenges: ["http-01"]`. A TLS-ALPN-01 or DNS-01 path is not needed;
+delegating `_acme-challenge` to Vercel instead would collide with Caddy's own
+DNS-01 for the same name.
+
 ## Build-asset cache
 
 Every site behind `(edge)` answers content-hashed build assets —
