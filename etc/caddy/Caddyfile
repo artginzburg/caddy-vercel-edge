@@ -88,6 +88,7 @@
 		-X-Vercel-Id
 		-X-Vercel-Cache
 		-X-Matched-Path
+		-Cache-Status
 	}
 	import static-cache {args[0]}
 	reverse_proxy {args[0]} {
