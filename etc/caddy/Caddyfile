@@ -76,8 +76,19 @@
 # X-Forwarded-For with this box's IP, so the client IP travels in
 # X-Edge-Client-IP-<marker>: the marker in the name keeps a direct request from
 # forging it. Build assets are answered from the box's cache first (static-cache above).
+# Responses drop the headers that name the hosting (Vercel, Next.js, Caddy); the
+# x-nextjs-* ones stay, the client router reads them. A `header` with deletions
+# is deferred, so it also strips what reverse_proxy adds (Via) and cached hits.
 #   Usage:  import edge https://origin.example.com
 (edge) {
+	header {
+		-Server
+		-Via
+		-X-Powered-By
+		-X-Vercel-Id
+		-X-Vercel-Cache
+		-X-Matched-Path
+	}
 	import static-cache {args[0]}
 	reverse_proxy {args[0]} {
 		header_up X-Edge-Proxy {env.EDGE_PROXY_MARKER}
