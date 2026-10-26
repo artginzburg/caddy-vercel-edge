@@ -46,7 +46,9 @@ Be honest about the trade — it is a real one:
 - **You lose the real client IP.** Every request reaches Vercel from the proxy,
   so `request.ip`, geolocation and anything keyed on IP see the box. Read
   `X-Forwarded-For` (**first** entry) instead. Do not enable Vercel's WAF rate
-  limiting — it would count all your users as one address.
+  limiting — it would count all your users as one address. Vercel's automatic
+  mitigation makes the same mistake on its own: see
+  [Proxying all traffic](#proxying-all-traffic-the-box-must-filter-for-vercel).
 - **Vercel does not recommend it.** It is *not* a Terms of Service violation:
   Vercel detects proxies, shows a "Proxy Detected" banner, publishes a setup
   guide and sells a feature for it. But their firewall loses traffic visibility,
@@ -181,6 +183,66 @@ HTTPS. One import per hostname. Check it with
 `acceptedChallenges: ["http-01"]`. A TLS-ALPN-01 or DNS-01 path is not needed;
 delegating `_acme-challenge` to Vercel instead would collide with Caddy's own
 DNS-01 for the same name.
+
+#### Proxying all traffic: the box must filter for Vercel
+
+Once (nearly) everyone resolves to the box, Vercel sees a single client — the
+box's IP — sending every request, scanner junk included, and its automatic
+DDoS mitigation judges that IP as a whole. On 2026-10-26, ~90 s after a
+production site was switched to "everyone but Telegram → box", scanners probing
+`%5C` paths (which the app answered with 500) got the box a **Vercel Security
+Checkpoint**: `403` with `x-vercel-mitigated: challenge` on every request, for
+every user, for ~10 minutes. GeoDNS for one country never triggered it; the
+whole-world funnel did. Two things are needed before such a switch:
+
+**1. A Vercel system bypass for the box IP** (Pro and up), so Vercel never
+challenges the proxy itself:
+
+```bash
+curl -X POST "https://api.vercel.com/v1/security/firewall/bypass?projectId=$PROJECT&teamId=$TEAM" \
+  -H "Authorization: Bearer $VERCEL_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"projectScope": true, "sourceIp": "<box IP>", "note": "edge proxy"}'
+# or: vercel firewall system-bypass add <box IP>   (in the linked project)
+```
+
+`GET` on the same path lists it. It takes effect immediately, no redeploy.
+
+**2. The box does the filtering Vercel no longer does** — `import edge-shield`
+in the HTTPS site block (and in `origin.<domain>` if it proxies anything):
+
+- **edge-scanner-filter** answers `404` at the box, never forwarded, for paths
+  none of our apps serve. It matches the *decoded* path, so `%2e`, `%5C` and
+  fully hex-encoded variants are caught too: a backslash, NUL, or `%` still
+  present after decoding (double encoding); a dot segment (`/.env`, `/.git`,
+  `/.aws`) other than `/.well-known`; CMS and admin-panel probes at the root
+  (`/wp-*`, `/cgi-bin`, `/phpmyadmin`, `/vendor/`, `/actuator`,
+  `/server-status`…); secret and backup extensions (`.php`, `.sql`, `.env`,
+  `.yml`, `.bak`, `.zip`, `.key`…). `/.well-known/*` always passes (ACME,
+  `apple-app-site-association`, `assetlinks.json`, Vercel's challenge assets).
+  On a week of a production site's traffic it matched 0.85 % of requests, all of
+  them junk, and none of the 2xx pages; check your own log before adopting it
+  — a site that serves `.yml` or `.php` must not.
+- **edge-rate-limit** (`github.com/mholt/caddy-ratelimit`, built in by
+  `install.sh`): per client IP, 600 requests / 30 s for pages and APIs, 1500 /
+  30 s for build assets, then `429` with `Retry-After`. Generous on purpose:
+  one phone opening a Next.js landing page makes ~250 requests in 10 s through
+  link prefetching, and Russian mobile carriers put many users behind one CGNAT
+  address. Zones are global by name, so every site importing the snippet
+  shares one budget per client IP. IPv6 clients are keyed per address.
+
+The filter is a `handle`, which runs before `route` (the asset cache),
+`respond` and `reverse_proxy`. A site's own `handle /path/*` blocks sort ahead
+of it, so a site that has them redirects with a matcher instead (`@page not
+path /api/*` + `redir @page …`). A redirect-only block (`www`) needs neither.
+
+Check after a reload:
+
+```bash
+curl -s -o /dev/null -w '%{http_code} %{size_download}\n' --path-as-is https://example.com/%5C   # 404 0 — from the box
+seq 700 | xargs -P 40 -I{} curl -s -o /dev/null -w '%{http_code}\n' https://example.com/.limit-test-{} | sort | uniq -c
+#  ~600 × 404, the rest 429; normal browsing gets 200 again within 30 s
+journalctl -u caddy | grep 'rate limit exceeded'   # zone + client IP of each 429
+```
 
 ## Build-asset cache
 
