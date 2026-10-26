@@ -66,7 +66,30 @@
 		reverse_proxy {args[0]} {
 			header_up X-Edge-Proxy {env.EDGE_PROXY_MARKER}
 			header_up Accept-Encoding identity
+			import platform-error
 		}
+	}
+}
+
+# Vercel's own error responses (FUNCTION_INVOCATION_TIMEOUT, DEPLOYMENT_NOT_FOUND…)
+# carry X-Vercel-Error and a body naming Vercel with the request id. Keep the
+# status, swap the body for a neutral page; upstream headers are not copied, so
+# X-Vercel-Error goes too. The app's own error pages lack the header and pass.
+#   Usage: inside a reverse_proxy block, import platform-error
+(platform-error) {
+	@platform-error header X-Vercel-Error *
+	handle_response @platform-error {
+		header Content-Type "text/html; charset=utf-8"
+		header Cache-Control no-store
+		respond <<HTML
+			<!doctype html>
+			<html lang="ru">
+			<meta charset="utf-8">
+			<meta name="viewport" content="width=device-width, initial-scale=1">
+			<title>Сервис временно недоступен</title>
+			<p style="font: 18px/1.5 system-ui, sans-serif; text-align: center; margin: 30vh 16px">Сервис временно недоступен, попробуйте через минуту.</p>
+			</html>
+			HTML {rp.status_code}
 	}
 }
 
@@ -79,8 +102,17 @@
 # Responses drop the headers that name the hosting (Vercel, Next.js, Caddy); the
 # x-nextjs-* ones stay, the client router reads them. A `header` with deletions
 # is deferred, so it also strips what reverse_proxy adds (Via) and cached hits.
+# Vercel answers its own /_vercel/* paths (analytics, speed insights) on every
+# project, so they 404 here. A site whose pages load Vercel Analytics or Speed
+# Insights imports edge-proxy instead: the same, without that 404.
 #   Usage:  import edge https://origin.example.com
 (edge) {
+	@platform-path path /_vercel /_vercel/*
+	respond @platform-path 404
+	import edge-proxy {args[0]}
+}
+
+(edge-proxy) {
 	header {
 		-Server
 		-Via
@@ -94,6 +126,7 @@
 	reverse_proxy {args[0]} {
 		header_up X-Edge-Proxy {env.EDGE_PROXY_MARKER}
 		header_up X-Edge-Client-IP-{env.EDGE_PROXY_MARKER} {client_ip}
+		import platform-error
 	}
 }
 

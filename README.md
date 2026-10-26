@@ -434,7 +434,10 @@ commit by hand.
   `X-Powered-By`, `X-Vercel-Id`, `X-Vercel-Cache`, `X-Matched-Path`,
   `Cache-Status`. Keep `x-nextjs-stale-time` and `x-nextjs-prerender` — the
   Next.js client router reads them on RSC responses. To debug Vercel's cache,
-  request the origin directly; the proxy no longer shows it.
+  request the origin directly; the proxy no longer shows it. It also answers
+  `/_vercel/*` with 404 (a site that loads Vercel Analytics imports `edge-proxy`
+  instead), and gives Vercel platform errors (`X-Vercel-Error`, e.g.
+  `FUNCTION_INVOCATION_TIMEOUT`) a neutral Russian body, status kept.
 - **Keep the admin API on localhost** (`127.0.0.1:2019`).
 - **Configs are symlinks into this repo.** Don't delete the checkout; if you do,
   re-clone and re-run `install.sh`.
